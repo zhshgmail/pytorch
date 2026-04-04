@@ -107,6 +107,13 @@ class TestApisConfigJson(unittest.TestCase):
 class TestSdpaRegistration(unittest.TestCase):
     """Test SDPA registration module structure (without NPU hardware)."""
 
+    def test_syntax_valid(self):
+        """_sdpa.py has valid Python syntax."""
+        import ast
+        sdpa_path = os.path.join(TORCH_NPU_ROOT, "npu", "_sdpa.py")
+        with open(sdpa_path, "r") as f:
+            ast.parse(f.read())
+
     def test_module_imports(self):
         """_sdpa.py can be parsed without errors."""
         sdpa_path = os.path.join(TORCH_NPU_ROOT, "npu", "_sdpa.py")
@@ -144,6 +151,31 @@ class TestSdpaRegistration(unittest.TestCase):
         self.assertIn("philox_seed", content)
         self.assertIn("philox_offset", content)
 
+    def test_backward_registered(self):
+        """Backward function is registered for PrivateUse1."""
+        sdpa_path = os.path.join(TORCH_NPU_ROOT, "npu", "_sdpa.py")
+        with open(sdpa_path, "r") as f:
+            content = f.read()
+        self.assertIn("_scaled_dot_product_fused_attention_overrideable_backward",
+                       content, "Backward must be registered for PrivateUse1")
+        self.assertIn("_sdpa_backward_npu", content)
+
+    def test_backward_no_nonexistent_op(self):
+        """Backward should NOT call non-existent ops."""
+        sdpa_path = os.path.join(TORCH_NPU_ROOT, "npu", "_sdpa.py")
+        with open(sdpa_path, "r") as f:
+            content = f.read()
+        self.assertNotIn("_scaled_dot_product_attention_math_backward", content,
+                         "This op does not exist in PyTorch")
+
+    def test_zero_length_guard(self):
+        """Forward has early return for zero-length sequences."""
+        sdpa_path = os.path.join(TORCH_NPU_ROOT, "npu", "_sdpa.py")
+        with open(sdpa_path, "r") as f:
+            content = f.read()
+        self.assertIn("seq_len_q == 0", content,
+                       "Must guard against zero-length sequences")
+
 
 class TestKvCachePatch(unittest.TestCase):
     """Test KV cache flash attention patch module."""
@@ -174,6 +206,44 @@ class TestKvCachePatch(unittest.TestCase):
             content = f.read()
         self.assertIn("def apply()", content)
         self.assertIn("npu_flash_attention.npu_flash_attn_with_kvcache", content)
+
+    def test_kv_append_implemented(self):
+        """New k/v tokens must be written to cache, not silently ignored."""
+        patch_path = os.path.join(TORCH_NPU_ROOT, "contrib",
+                                  "npu_flash_attention_patch.py")
+        with open(patch_path, "r") as f:
+            content = f.read()
+        self.assertIn("k_cache[i,", content,
+                       "Must write new k tokens into k_cache")
+        self.assertIn("v_cache[i,", content,
+                       "Must write new v tokens into v_cache")
+
+    def test_gqa_infer_from_cache(self):
+        """num_key_value_heads should be inferred from k_cache shape, not default to num_heads."""
+        patch_path = os.path.join(TORCH_NPU_ROOT, "contrib",
+                                  "npu_flash_attention_patch.py")
+        with open(patch_path, "r") as f:
+            content = f.read()
+        self.assertIn("k_cache.shape[2]", content,
+                       "Should infer num_key_value_heads from k_cache shape")
+
+    def test_window_size_warning(self):
+        """Sliding window should warn, not silently drop."""
+        patch_path = os.path.join(TORCH_NPU_ROOT, "contrib",
+                                  "npu_flash_attention_patch.py")
+        with open(patch_path, "r") as f:
+            content = f.read()
+        self.assertIn("window_size", content)
+        self.assertIn("warnings.warn", content)
+
+    def test_apply_patches_lazy_cache(self):
+        """apply() should also patch HF's lazy import cache."""
+        patch_path = os.path.join(TORCH_NPU_ROOT, "contrib",
+                                  "npu_flash_attention_patch.py")
+        with open(patch_path, "r") as f:
+            content = f.read()
+        self.assertIn("_flash_with_kvcache_fn", content,
+                       "Must handle HF's lazy import caching")
 
 
 class TestInitRegistration(unittest.TestCase):

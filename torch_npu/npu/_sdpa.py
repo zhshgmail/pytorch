@@ -40,37 +40,41 @@ def _sdpa_forward_npu(
     seq_len_k = key.shape[2]
     head_dim = query.shape[3]
 
+    # Early return for zero-length sequences
+    if seq_len_q == 0 or seq_len_k == 0 or head_dim == 0:
+        empty_tensor = torch.empty(0, device=query.device, dtype=torch.int32)
+        return (
+            torch.empty_like(query),
+            torch.empty(0, device=query.device, dtype=torch.float32),
+            empty_tensor, empty_tensor, seq_len_q, seq_len_k,
+            torch.tensor(0, dtype=torch.long, device=query.device),
+            torch.tensor(0, dtype=torch.long, device=query.device),
+            torch.empty(0, device=query.device, dtype=query.dtype),
+        )
+
     if scale is None:
         scale = 1.0 / math.sqrt(head_dim)
 
     keep_prob = 1.0 - dropout_p
 
     # Build attention mask for causal mode
+    # Note: when is_causal=True, attn_bias is ignored (matches PyTorch behavior)
     atten_mask = None
     sparse_mode = 0
     if is_causal:
-        # Use sparse_mode for efficient causal masking
         # 3 = down-right aligned causal mask (standard autoregressive)
         sparse_mode = 3
-        # npu_fusion_attention with sparse_mode=3 generates causal mask internally,
-        # but needs a dummy mask tensor for the API
         max_len = max(seq_len_q, seq_len_k)
         atten_mask = torch.triu(
             torch.ones(max_len, max_len, device=query.device, dtype=torch.bool),
             diagonal=1,
         )
     elif attn_bias is not None:
-        # Convert additive bias to boolean mask: positions to mask out
-        # attn_bias is additive (large negative = masked), we need boolean mask
-        # where True = masked position
         if attn_bias.dtype == torch.bool:
             atten_mask = attn_bias
-        else:
-            # Treat attn_bias as additive; pass as pse (position-specific embedding)
-            # npu_fusion_attention supports additive bias via pse parameter
-            pass
+        # else: additive bias handled via pse below
 
-    # Determine pse (additive attention bias)
+    # Additive attention bias passed as pse (position-specific embedding)
     pse = None
     if attn_bias is not None and not is_causal and attn_bias.dtype != torch.bool:
         pse = attn_bias
@@ -92,14 +96,12 @@ def _sdpa_forward_npu(
     seed = result[4] if len(result) > 4 else torch.tensor(0, dtype=torch.long, device=query.device)
     offset = result[5] if len(result) > 5 else torch.tensor(0, dtype=torch.long, device=query.device)
 
-    # Build logsumexp from softmax_max + log(softmax_sum) for backward compatibility
-    # Shape: (B, H, S_q) — squeeze the trailing dim
+    # Build logsumexp from softmax_max for backward compatibility
     if softmax_max.numel() > 0 and softmax_max.dim() == 4:
-        logsumexp = softmax_max[..., 0]  # Take first element of the 8-wide vector
+        logsumexp = softmax_max[..., 0]
     else:
         logsumexp = torch.empty(0, device=query.device, dtype=torch.float32)
 
-    # Return empty tensors for fields not used in standard (non-varlen) attention
     empty_tensor = torch.empty(0, device=query.device, dtype=torch.int32)
     debug_mask = torch.empty(0, device=query.device, dtype=query.dtype)
 
@@ -137,25 +139,72 @@ def _sdpa_backward_npu(
     scale: Optional[float] = None,
 ):
     """
-    NPU backward for SDPA. Falls back to the math implementation
-    since npu_fusion_attention backward is handled by the autograd
-    graph of the forward call (it's already autograd-aware).
+    NPU backward for SDPA.
+
+    npu_fusion_attention is autograd-aware, so its forward pass records the
+    backward graph automatically. This explicit backward is only reached if
+    the autograd graph was somehow detached.
+
+    We recompute attention via the math path (matmul + softmax) to get gradients.
+    This is slower than a fused backward but correct, and the forward path
+    (where perf matters most) still uses the NPU-accelerated kernel.
     """
-    # npu_fusion_attention registers its own backward through PyTorch's
-    # autograd system. When called through the standard SDPA dispatcher,
-    # the backward is handled automatically.
-    # This explicit backward is only called if the autograd path doesn't work,
-    # in which case we fall back to the math-based backward.
     head_dim = query.shape[-1]
     if scale is None:
         scale = 1.0 / math.sqrt(head_dim)
 
-    # Reconstruct attention weights and compute gradients via math path
-    # This is the safe fallback - the forward path is where the perf matters
-    return torch.ops.aten._scaled_dot_product_attention_math_backward(
-        grad_out, query, key, value, attn_bias, grad_input_mask,
-        out, logsumexp, dropout_p, is_causal, scale=scale,
-    )
+    # Recompute via math attention: Q @ K^T * scale -> softmax -> @ V
+    # Then use autograd to get gradients
+    with torch.enable_grad():
+        q = query.detach().requires_grad_(grad_input_mask[0])
+        k = key.detach().requires_grad_(grad_input_mask[1])
+        v = value.detach().requires_grad_(grad_input_mask[2])
+
+        attn_weight = torch.matmul(q, k.transpose(-2, -1)) * scale
+        if is_causal:
+            seq_len_q = q.shape[2]
+            seq_len_k = k.shape[2]
+            causal_mask = torch.triu(
+                torch.ones(seq_len_q, seq_len_k, device=q.device, dtype=torch.bool),
+                diagonal=seq_len_k - seq_len_q + 1,
+            )
+            attn_weight = attn_weight.masked_fill(causal_mask, float("-inf"))
+        elif attn_bias is not None and attn_bias.numel() > 0:
+            if attn_bias.dtype == torch.bool:
+                attn_weight = attn_weight.masked_fill(attn_bias, float("-inf"))
+            else:
+                attn_weight = attn_weight + attn_bias
+
+        attn_weight = torch.nn.functional.softmax(attn_weight, dim=-1)
+        if dropout_p > 0.0:
+            attn_weight = torch.nn.functional.dropout(attn_weight, p=dropout_p)
+        output = torch.matmul(attn_weight, v)
+
+    grads_to_compute = []
+    tensors_for_grad = []
+    if grad_input_mask[0]:
+        tensors_for_grad.append(q)
+    if grad_input_mask[1]:
+        tensors_for_grad.append(k)
+    if grad_input_mask[2]:
+        tensors_for_grad.append(v)
+
+    if tensors_for_grad:
+        computed_grads = torch.autograd.grad(output, tensors_for_grad, grad_out)
+    else:
+        computed_grads = ()
+
+    idx = 0
+    grad_query = computed_grads[idx] if grad_input_mask[0] else torch.empty(0, device=query.device)
+    if grad_input_mask[0]:
+        idx += 1
+    grad_key = computed_grads[idx] if grad_input_mask[1] else torch.empty(0, device=query.device)
+    if grad_input_mask[1]:
+        idx += 1
+    grad_value = computed_grads[idx] if grad_input_mask[2] else torch.empty(0, device=query.device)
+    grad_attn_bias = torch.empty(0, device=query.device)
+
+    return grad_query, grad_key, grad_value, grad_attn_bias
 
 
 def register_sdpa_for_npu():
@@ -164,3 +213,8 @@ def register_sdpa_for_npu():
         "aten::_scaled_dot_product_fused_attention_overrideable",
         "PrivateUse1",
     )(_sdpa_forward_npu)
+
+    torch.library.impl(
+        "aten::_scaled_dot_product_fused_attention_overrideable_backward",
+        "PrivateUse1",
+    )(_sdpa_backward_npu)
