@@ -257,6 +257,50 @@ class TestInitRegistration(unittest.TestCase):
         self.assertIn("register_sdpa_for_npu", content,
                       "__init__.py should call register_sdpa_for_npu()")
 
+    def test_init_sdpa_has_error_handling(self):
+        """SDPA registration must be wrapped in try/except to not crash import."""
+        init_path = os.path.join(TORCH_NPU_ROOT, "__init__.py")
+        with open(init_path, "r") as f:
+            content = f.read()
+        # Find the registration block and check it's in try/except
+        idx = content.find("register_sdpa_for_npu")
+        self.assertGreater(idx, 0)
+        # Check that 'try:' appears before the registration
+        block_start = content.rfind("try:", 0, idx)
+        self.assertGreater(block_start, 0,
+                           "SDPA registration must be in try/except block")
+
+
+class TestTransferToNpu(unittest.TestCase):
+    """Test transfer_to_npu.py correctness."""
+
+    def test_wrapper_exception_safety(self):
+        """_wrapper_libraries_func must use try/finally to restore torch.cuda.is_available."""
+        wrapper_path = os.path.join(TORCH_NPU_ROOT, "contrib", "transfer_to_npu.py")
+        with open(wrapper_path, "r") as f:
+            content = f.read()
+        # Find the wrapper function and check for try/finally
+        idx = content.find("def _wrapper_libraries_func")
+        self.assertGreater(idx, 0)
+        # Get the function body (up to the next def at the same or lower indent)
+        func_end = content.find("\ndef ", idx + 10)
+        func_body = content[idx:func_end]
+        self.assertIn("try:", func_body,
+                      "_wrapper_libraries_func must use try/finally")
+        self.assertIn("finally:", func_body,
+                      "_wrapper_libraries_func must use try/finally")
+
+    def test_kv_cache_reshape_uses_cache_shape(self):
+        """BSH reshape must use actual cache head count, not kwarg."""
+        patch_path = os.path.join(TORCH_NPU_ROOT, "contrib",
+                                  "npu_flash_attention_patch.py")
+        with open(patch_path, "r") as f:
+            content = f.read()
+        self.assertIn("cache_kv_heads", content,
+                       "Must use separate variable for cache shape in reshape")
+        self.assertIn("cache_kv_heads * head_dim", content,
+                       "BSH reshape must use cache_kv_heads, not num_key_value_heads")
+
 
 class TestRequirements(unittest.TestCase):
     """Test that requirements are updated."""

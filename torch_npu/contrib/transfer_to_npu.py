@@ -140,9 +140,10 @@ def _wrapper_libraries_func(fn):
     def decorated(*args, **kwargs):
         patched_is_available = torch.cuda.is_available
         torch.cuda.is_available = is_available
-        result = fn(*args, **kwargs)
-        torch.cuda.is_available = patched_is_available
-        return result
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            torch.cuda.is_available = patched_is_available
 
     return decorated
 

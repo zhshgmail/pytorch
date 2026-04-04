@@ -61,9 +61,10 @@ def npu_flash_attn_with_kvcache(
     if softmax_scale is None:
         softmax_scale = 1.0 / math.sqrt(head_dim)
 
-    # Infer num_key_value_heads from cache shape instead of defaulting to num_heads
+    # Always use actual cache head count for reshape; infer kwarg if not provided
+    cache_kv_heads = k_cache.shape[2]
     if num_key_value_heads == 0:
-        num_key_value_heads = k_cache.shape[2]
+        num_key_value_heads = cache_kv_heads
 
     # Write new KV tokens into cache at cache_seqlens positions
     if k is not None and v is not None and cache_seqlens is not None:
@@ -86,9 +87,10 @@ def npu_flash_attn_with_kvcache(
     seq_len_kv = k_cache.shape[1]
 
     # Convert from BSND (HF format) to BSH (npu_incre_flash_attention format)
+    # Use cache_kv_heads (actual cache shape) for reshape, not num_key_value_heads
     q_bsh = q.reshape(batch_size, seq_len_q, num_heads * head_dim)
-    k_bsh = k_cache.reshape(batch_size, seq_len_kv, num_key_value_heads * head_dim)
-    v_bsh = v_cache.reshape(batch_size, seq_len_kv, num_key_value_heads * head_dim)
+    k_bsh = k_cache.reshape(batch_size, seq_len_kv, cache_kv_heads * head_dim)
+    v_bsh = v_cache.reshape(batch_size, seq_len_kv, cache_kv_heads * head_dim)
 
     # Build causal mask for multi-token query
     atten_mask = None

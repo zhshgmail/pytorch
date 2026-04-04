@@ -235,8 +235,14 @@ def _wrap_torch_patch_warning_func(func):
 setattr(torch.nn, "DropoutWithByteMask", _wrap_torch_patch_warning_func(torch.nn.DropoutWithByteMask))
 setattr(torch.nn.functional, "dropout_with_byte_mask", _wrap_torch_patch_warning_func(torch.nn.functional.dropout_with_byte_mask))
 # Register SDPA (scaled dot product attention) for NPU
-from torch_npu.npu._sdpa import register_sdpa_for_npu
-register_sdpa_for_npu()
+try:
+    from torch_npu.npu._sdpa import register_sdpa_for_npu
+    register_sdpa_for_npu()
+except Exception:
+    warnings.warn(
+        "Failed to register SDPA for NPU. Models using attn_implementation='sdpa' "
+        "may fall back to CPU. This may be due to an incompatible PyTorch version."
+    )
 
 # this must be placed at the end
 torch_npu._C._initExtension()
