@@ -63,16 +63,29 @@ npu_flash_attn_with_kvcache()  # KV Cache 版本 (未实现，NotImplementedErro
 3. **Tokenizer 整合** — 单文件 tokenizer（无 NPU 影响）
 4. **模型目录结构变更** — `modeling_*.py` 重组（可能影响 monkey-patch 路径）
 
-### 2.3 仍存在的 CUDA 硬编码问题
+### 2.3 HF 5.x 已有的 NPU 支持（36 处 `is_torch_npu_available` 调用）
+
+**重要：HF 的 "原生 NPU 支持" 不是自己实现了后端，而是在代码中预留了 torch_npu 的检测和调用入口，仍然依赖 torch_npu。**
+
+已覆盖（不需要 transfer_to_npu patch）：
+- `trainer.py` 第 3157, 3550 行 — NPU RNG 状态保存/恢复
+- `training_args.py` 第 1848 行 — NPU 设备检测
+- `trainer_utils.py` 6 处 — 内存监控 NPU 路径
+- `modeling_flash_attention_utils.py` — 自动选择 NPU flash attention
+- `integrations/npu_flash_attention.py` — 调用 `torch_npu.npu_fusion_attention`
+- `integrations/sdpa_attention.py` — SDPA 的 NPU 特殊处理
+- `quantizers/quantizer_bnb_*.py` — 量化 NPU 路径
+- `pipelines/base.py` — Pipeline 默认设备
+
+### 2.4 仍存在的 CUDA 硬编码问题
 
 ```python
-# trainer.py 中仍有：
-torch.cuda.empty_cache()           # 第 2747, 2757 行
-torch.cuda.random.get_rng_state()  # 第 3147-3152 行 (RNG 状态)
-torch.cuda.random.set_rng_state()  # 第 3548-3549 行
+# trainer.py 中仅剩：
+torch.cuda.empty_cache()  # 第 2747, 2757 行 — 没有 NPU 分支
 ```
 
-这些需要通过 `transfer_to_npu` 或贡献 PR 到上游 transformers 来解决。
+注意：RNG 状态管理（第 3147-3152, 3548-3549 行）在 5.x 中**已经有 NPU 分支**，
+不再需要 transfer_to_npu patch。仅 `empty_cache` 仍需处理。
 
 ## 3. 详细升级计划
 
