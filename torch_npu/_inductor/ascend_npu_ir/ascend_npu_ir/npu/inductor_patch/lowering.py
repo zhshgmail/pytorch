@@ -6751,8 +6751,11 @@ def sort_stable(x, *, stable=None, dim=-1, descending=False):
     if not V.graph.sizevars.statically_known_lt(dim_size, torch.iinfo(torch.int16).max):
         return sort_fallback(x, stable=stable, dim=dim, descending=descending)
 
+    # NPU's aclnnSort always outputs int64 indices. Using int16 here causes
+    # a dtype mismatch when the compiled kernel runs on NPU ("Dst tensor size:4
+    # is less than src tensor size: 8"). Use int64 to match aclnnSort's output.
     indices = iota(
-        dim_size, start=0, step=1, dtype=torch.int16, device=device, requires_grad=False
+        dim_size, start=0, step=1, dtype=torch.int64, device=device, requires_grad=False
     )
     view_shape = [1] * len(shape)
     if len(shape):
