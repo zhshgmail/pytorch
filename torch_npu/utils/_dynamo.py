@@ -170,9 +170,16 @@ def patch_inductor_wrapper():
         NpuBackendType = Literal["default", "mlir", "dvm"]
         if "npu_backend" not in ori_dict:
             ori_dict["npu_backend"] = "default"
-            self._config["npu_backend"] = _ConfigEntry(
-                    Config(default="default", value_type=NpuBackendType)
-            )
+            try:
+                self._config["npu_backend"] = _ConfigEntry(
+                        Config(default="default", value_type=NpuBackendType),
+                        "npu_backend"
+                )
+            except TypeError:
+                # Older PyTorch without name parameter
+                self._config["npu_backend"] = _ConfigEntry(
+                        Config(default="default", value_type=NpuBackendType)
+                )
         return ori_dict
 
     def new_init(self, mode, options, dynamic):

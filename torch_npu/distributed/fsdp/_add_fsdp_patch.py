@@ -6,7 +6,16 @@ import operator
 import torch
 from torch import distributed as dist
 from torch.distributed.fsdp import fully_shard as torch_fully_shard
-from torch.distributed.fsdp._fully_shard._fsdp_common import compiled_autograd_enabled, TrainingState
+from torch.distributed.fsdp._fully_shard._fsdp_common import TrainingState
+try:
+    from torch.distributed.fsdp._fully_shard._fsdp_common import compiled_autograd_enabled
+except ImportError:
+    # Removed in PyTorch nightly (moved to torch._dynamo.compiled_autograd)
+    try:
+        from torch._dynamo.compiled_autograd import compiled_autograd_enabled
+    except ImportError:
+        def compiled_autograd_enabled():
+            return False
 from torch.distributed.fsdp._fully_shard._fsdp_param import FSDPParam, ShardedState
 from torch.distributed.fsdp._fully_shard._fsdp_param_group import FSDPParamGroup
 from torch.distributed.fsdp._fully_shard._fsdp_state import FSDPState
