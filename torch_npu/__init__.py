@@ -234,6 +234,19 @@ try:
 except (ImportError, AttributeError):
     pass
 
+# Compat shim: SizeVarAllocator.size_hint and symbolic_hint were removed
+# in PyTorch nightly (PR #175365). torch_npu inductor codegen uses them.
+try:
+    from torch._inductor.sizevars import SizeVarAllocator
+    if not hasattr(SizeVarAllocator, 'size_hint'):
+        SizeVarAllocator.size_hint = SizeVarAllocator.optimization_hint
+    if not hasattr(SizeVarAllocator, 'size_hints'):
+        SizeVarAllocator.size_hints = SizeVarAllocator.optimization_hints
+    if not hasattr(SizeVarAllocator, 'symbolic_hint'):
+        SizeVarAllocator.symbolic_hint = SizeVarAllocator.optimization_hint
+except (ImportError, AttributeError):
+    pass
+
 _warn_msg = {
     "DropoutWithByteMask" : "torch.nn.DropoutWithByteMask is deprecated and will be removed in future version. Use torch_npu.contrib.module.DropoutWithByteMask instead.",
     "dropout_with_byte_mask" : "torch.nn.functional.dropout_with_byte_mask is deprecated and will be removed in future version. Use torch_npu.contrib.function.dropout_with_byte_mask instead.",
