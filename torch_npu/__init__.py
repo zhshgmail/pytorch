@@ -220,6 +220,20 @@ _apply_class_patches()
 _asd_patch()
 _except_handler.patch_excepthook()
 
+# Patch FlexAttention to support NPU (upstream only allows cuda/cpu/xpu/hpu)
+try:
+    from torch.nn.attention import flex_attention as _flex_mod
+    _orig_validate_device = _flex_mod._validate_device
+
+    def _patched_validate_device(query, key, value):
+        if query.device.type == "npu":
+            return
+        return _orig_validate_device(query, key, value)
+
+    _flex_mod._validate_device = _patched_validate_device
+except (ImportError, AttributeError):
+    pass
+
 _warn_msg = {
     "DropoutWithByteMask" : "torch.nn.DropoutWithByteMask is deprecated and will be removed in future version. Use torch_npu.contrib.module.DropoutWithByteMask instead.",
     "dropout_with_byte_mask" : "torch.nn.functional.dropout_with_byte_mask is deprecated and will be removed in future version. Use torch_npu.contrib.function.dropout_with_byte_mask instead.",
