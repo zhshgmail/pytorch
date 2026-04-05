@@ -234,20 +234,34 @@ try:
 except (ImportError, AttributeError):
     pass
 
-# Patch create_block_mask to skip torch.compile on NPU.
-# The compiled create_block_mask triggers aclnnSort dtype mismatch in the
-# inductor-generated kernel. The eager path works correctly.
+# Patch flex_attention to skip torch.compile on NPU.
+# The compiled flex_attention and create_block_mask trigger aclnnSort dtype
+# mismatch in the inductor-generated kernel. The eager path works correctly.
+# Both create_block_mask(_compile=True) and HF's _FlexAttentionCompiledWrapper
+# use torch.compile, which generates Sort kernels with wrong output dtype on NPU.
 try:
     from torch.nn.attention import flex_attention as _flex_attn_mod
     _orig_create_block_mask = _flex_attn_mod.create_block_mask
 
     @wraps(_orig_create_block_mask)
     def _patched_create_block_mask(*args, **kwargs):
-        # Force _compile=False on NPU — the compiled Sort kernel has a dtype bug
         kwargs['_compile'] = False
         return _orig_create_block_mask(*args, **kwargs)
 
     _flex_attn_mod.create_block_mask = _patched_create_block_mask
+except (ImportError, AttributeError):
+    pass
+
+try:
+    from transformers.integrations.flex_attention import _FlexAttentionCompiledWrapper
+    _orig_get_compiled = _FlexAttentionCompiledWrapper.__call__
+
+    def _npu_get_compiled(self, training=False):
+        # Return uncompiled flex_attention on NPU to avoid inductor Sort bug
+        from torch.nn.attention.flex_attention import flex_attention
+        return flex_attention
+
+    _FlexAttentionCompiledWrapper.__call__ = _npu_get_compiled
 except (ImportError, AttributeError):
     pass
 
