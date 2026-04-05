@@ -231,6 +231,9 @@ try:
         return _orig_validate_device(query, key, value)
 
     _flex_mod._validate_device = _patched_validate_device
+    # Disable compile for flex_attention on NPU — the compiled Sort kernel
+    # has a dtype mismatch bug. The debug (uncompiled) path works correctly.
+    _flex_mod._FLEX_ATTENTION_DISABLE_COMPILE_DEBUG = True
 except (ImportError, AttributeError):
     pass
 
