@@ -286,16 +286,22 @@ try:
 except (ImportError, AttributeError):
     pass
 
-# Fix: PyTorch inductor's sort lowering uses int16 indices (for Triton
-# efficiency), but aclnnSort on NPU always outputs int64 indices. The dtype
-# mismatch causes "Dst tensor size:4 < src tensor size:8" in compiled kernels.
-# Replace the sort lowerings with fallback handlers that go directly to aten.
+# Fix: ir.Sort in PyTorch inductor uses int16 indices (Triton optimization),
+# but NPU's tl.sort/aclnnSort requires int64 indices. Patch ir.Sort.create
+# to upcast indices dtype to int64 when targeting NPU.
 try:
-    from torch._inductor.lowering import lowerings, fallback_handler
-    _sort_stable_key = torch.ops.aten.sort.stable
-    _sort_default_key = torch.ops.aten.sort.default
-    lowerings[_sort_stable_key] = fallback_handler(_sort_stable_key, add_to_fallback_set=False)
-    lowerings[_sort_default_key] = fallback_handler(_sort_default_key, add_to_fallback_set=False)
+    from torch._inductor import ir as _inductor_ir
+    _orig_sort_create = _inductor_ir.Sort.create.__func__
+
+    @classmethod
+    def _npu_sort_create(cls, *, device, dtypes, inner_fns, size, axis, stable, descending):
+        # Force indices dtype to int64 on NPU (aclnnSort always outputs int64)
+        if device and hasattr(device, 'type') and str(device).startswith('npu'):
+            dtypes = (dtypes[0], torch.int64) + dtypes[2:]
+        return _orig_sort_create(cls, device=device, dtypes=dtypes, inner_fns=inner_fns,
+                                  size=size, axis=axis, stable=stable, descending=descending)
+
+    _inductor_ir.Sort.create = _npu_sort_create
 except (ImportError, AttributeError):
     pass
 
