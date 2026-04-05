@@ -253,15 +253,16 @@ except (ImportError, AttributeError):
     pass
 
 try:
-    from transformers.integrations.flex_attention import _FlexAttentionCompiledWrapper
-    _orig_get_compiled = _FlexAttentionCompiledWrapper.__call__
-
-    def _npu_get_compiled(self, training=False):
+    from transformers.integrations.flex_attention import WrappedFlexAttention
+    def _npu_flex_call(self):
         # Return uncompiled flex_attention on NPU to avoid inductor Sort bug
-        from torch.nn.attention.flex_attention import flex_attention
-        return flex_attention
+        from torch.nn.attention.flex_attention import flex_attention as _raw_flex
+        return _raw_flex
 
-    _FlexAttentionCompiledWrapper.__call__ = _npu_get_compiled
+    WrappedFlexAttention.__call__ = _npu_flex_call
+    # Prevent __init__ from compiling
+    WrappedFlexAttention._is_flex_compiled = True
+    WrappedFlexAttention._compiled_flex_attention = None  # will be overridden by __call__
 except (ImportError, AttributeError):
     pass
 
