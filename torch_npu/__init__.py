@@ -257,15 +257,19 @@ except (ImportError, AttributeError):
 
 try:
     from transformers.integrations.flex_attention import WrappedFlexAttention
-    def _npu_flex_call(self):
-        # Return uncompiled flex_attention on NPU to avoid inductor Sort bug
-        from torch.nn.attention.flex_attention import flex_attention as _raw_flex
-        return _raw_flex
+    from torch.nn.attention.flex_attention import flex_attention as _raw_flex_attn
 
+    def _npu_flex_init(self, training=False):
+        # Skip torch.compile — use uncompiled flex_attention on NPU
+        self.training = training
+        self._compiled_flex_attention = _raw_flex_attn
+        self._is_flex_compiled = True
+
+    def _npu_flex_call(self):
+        return self._compiled_flex_attention
+
+    WrappedFlexAttention.__init__ = _npu_flex_init
     WrappedFlexAttention.__call__ = _npu_flex_call
-    # Prevent __init__ from compiling
-    WrappedFlexAttention._is_flex_compiled = True
-    WrappedFlexAttention._compiled_flex_attention = None  # will be overridden by __call__
 except (ImportError, AttributeError):
     pass
 
