@@ -241,7 +241,7 @@ try:
     from torch.nn.attention import flex_attention as _flex_attn_mod
     _orig_create_block_mask = _flex_attn_mod.create_block_mask
 
-    @functools.wraps(_orig_create_block_mask)
+    @wraps(_orig_create_block_mask)
     def _patched_create_block_mask(*args, **kwargs):
         # Force _compile=False on NPU — the compiled Sort kernel has a dtype bug
         kwargs['_compile'] = False
