@@ -289,12 +289,13 @@ except (ImportError, AttributeError):
 # Fix: PyTorch inductor's sort lowering uses int16 indices (for Triton
 # efficiency), but aclnnSort on NPU always outputs int64 indices. The dtype
 # mismatch causes "Dst tensor size:4 < src tensor size:8" in compiled kernels.
-# Force sort to use fallback (direct aten call) on NPU, bypassing the
-# int16 iota + ir.Sort path.
+# Replace the sort lowerings with fallback handlers that go directly to aten.
 try:
-    import torch._inductor.lowering as _ind_lowering
-    _ind_lowering.make_fallback(torch.ops.aten.sort.stable)
-    _ind_lowering.make_fallback(torch.ops.aten.sort.default)
+    from torch._inductor.lowering import lowerings, fallback_handler
+    _sort_stable_key = torch.ops.aten.sort.stable
+    _sort_default_key = torch.ops.aten.sort.default
+    lowerings[_sort_stable_key] = fallback_handler(_sort_stable_key, add_to_fallback_set=False)
+    lowerings[_sort_default_key] = fallback_handler(_sort_default_key, add_to_fallback_set=False)
 except (ImportError, AttributeError):
     pass
 
