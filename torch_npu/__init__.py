@@ -220,7 +220,8 @@ _apply_class_patches()
 _asd_patch()
 _except_handler.patch_excepthook()
 
-# Patch FlexAttention to support NPU (upstream only allows cuda/cpu/xpu/hpu)
+# Patch FlexAttention to support NPU (upstream only allows cuda/cpu/xpu/hpu).
+# Requires CANN >= 9.0.0 for aclnnSort compatibility with compiled Sort kernels.
 try:
     from torch.nn.attention import flex_attention as _flex_mod
     _orig_validate_device = _flex_mod._validate_device
@@ -231,45 +232,6 @@ try:
         return _orig_validate_device(query, key, value)
 
     _flex_mod._validate_device = _patched_validate_device
-    # Disable compile for flex_attention on NPU — the compiled Sort kernel
-    # has a dtype mismatch bug. The debug (uncompiled) path works correctly.
-    _flex_mod._FLEX_ATTENTION_DISABLE_COMPILE_DEBUG = True
-except (ImportError, AttributeError):
-    pass
-
-# Patch flex_attention to skip torch.compile on NPU.
-# The compiled flex_attention and create_block_mask trigger aclnnSort dtype
-# mismatch in the inductor-generated kernel. The eager path works correctly.
-# Both create_block_mask(_compile=True) and HF's _FlexAttentionCompiledWrapper
-# use torch.compile, which generates Sort kernels with wrong output dtype on NPU.
-try:
-    from torch.nn.attention import flex_attention as _flex_attn_mod
-    _orig_create_block_mask = _flex_attn_mod.create_block_mask
-
-    @wraps(_orig_create_block_mask)
-    def _patched_create_block_mask(*args, **kwargs):
-        kwargs['_compile'] = False
-        return _orig_create_block_mask(*args, **kwargs)
-
-    _flex_attn_mod.create_block_mask = _patched_create_block_mask
-except (ImportError, AttributeError):
-    pass
-
-try:
-    from transformers.integrations.flex_attention import WrappedFlexAttention
-    from torch.nn.attention.flex_attention import flex_attention as _raw_flex_attn
-
-    def _npu_flex_init(self, training=False):
-        # Skip torch.compile — use uncompiled flex_attention on NPU
-        self.training = training
-        self._compiled_flex_attention = _raw_flex_attn
-        self._is_flex_compiled = True
-
-    def _npu_flex_call(self):
-        return self._compiled_flex_attention
-
-    WrappedFlexAttention.__init__ = _npu_flex_init
-    WrappedFlexAttention.__call__ = _npu_flex_call
 except (ImportError, AttributeError):
     pass
 
@@ -283,26 +245,6 @@ try:
         SizeVarAllocator.size_hints = SizeVarAllocator.optimization_hints
     if not hasattr(SizeVarAllocator, 'symbolic_hint'):
         SizeVarAllocator.symbolic_hint = SizeVarAllocator.optimization_hint
-except (ImportError, AttributeError):
-    pass
-
-# Fix: ir.Sort in PyTorch inductor uses int16 indices (Triton optimization),
-# but NPU's tl.sort/aclnnSort requires int64 indices. Patch ir.Sort.create
-# to upcast indices dtype to int64 when targeting NPU.
-try:
-    from torch._inductor import ir as _inductor_ir
-    _orig_sort_create = _inductor_ir.Sort.create.__func__
-
-    @classmethod
-    def _npu_sort_create(cls, *, device, dtypes, inner_fns, size, axis, stable, descending):
-        import sys
-        print(f"[ir.Sort.create] device={device} dtypes={dtypes}", file=sys.stderr, flush=True)
-        if len(dtypes) >= 2 and dtypes[1] != torch.int64:
-            dtypes = (dtypes[0], torch.int64) + dtypes[2:]
-        return _orig_sort_create(cls, device=device, dtypes=dtypes, inner_fns=inner_fns,
-                                  size=size, axis=axis, stable=stable, descending=descending)
-
-    _inductor_ir.Sort.create = _npu_sort_create
 except (ImportError, AttributeError):
     pass
 
