@@ -286,6 +286,18 @@ try:
 except (ImportError, AttributeError):
     pass
 
+# Fix: PyTorch inductor's sort lowering uses int16 indices (for Triton
+# efficiency), but aclnnSort on NPU always outputs int64 indices. The dtype
+# mismatch causes "Dst tensor size:4 < src tensor size:8" in compiled kernels.
+# Force sort to use fallback (direct aten call) on NPU, bypassing the
+# int16 iota + ir.Sort path.
+try:
+    import torch._inductor.lowering as _ind_lowering
+    _ind_lowering.make_fallback(torch.ops.aten.sort.stable)
+    _ind_lowering.make_fallback(torch.ops.aten.sort.default)
+except (ImportError, AttributeError):
+    pass
+
 _warn_msg = {
     "DropoutWithByteMask" : "torch.nn.DropoutWithByteMask is deprecated and will be removed in future version. Use torch_npu.contrib.module.DropoutWithByteMask instead.",
     "dropout_with_byte_mask" : "torch.nn.functional.dropout_with_byte_mask is deprecated and will be removed in future version. Use torch_npu.contrib.function.dropout_with_byte_mask instead.",
