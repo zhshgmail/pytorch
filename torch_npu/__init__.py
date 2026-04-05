@@ -295,8 +295,8 @@ try:
 
     @classmethod
     def _npu_sort_create(cls, *, device, dtypes, inner_fns, size, axis, stable, descending):
-        # Force indices dtype to int64 — aclnnSort always outputs int64.
-        # PyTorch uses int16 for Triton efficiency but NPU can't handle it.
+        import sys
+        print(f"[ir.Sort.create] device={device} dtypes={dtypes}", file=sys.stderr, flush=True)
         if len(dtypes) >= 2 and dtypes[1] != torch.int64:
             dtypes = (dtypes[0], torch.int64) + dtypes[2:]
         return _orig_sort_create(cls, device=device, dtypes=dtypes, inner_fns=inner_fns,
