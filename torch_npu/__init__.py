@@ -234,6 +234,23 @@ try:
 except (ImportError, AttributeError):
     pass
 
+# Patch create_block_mask to skip torch.compile on NPU.
+# The compiled create_block_mask triggers aclnnSort dtype mismatch in the
+# inductor-generated kernel. The eager path works correctly.
+try:
+    from torch.nn.attention import flex_attention as _flex_attn_mod
+    _orig_create_block_mask = _flex_attn_mod.create_block_mask
+
+    @functools.wraps(_orig_create_block_mask)
+    def _patched_create_block_mask(*args, **kwargs):
+        # Force _compile=False on NPU — the compiled Sort kernel has a dtype bug
+        kwargs['_compile'] = False
+        return _orig_create_block_mask(*args, **kwargs)
+
+    _flex_attn_mod.create_block_mask = _patched_create_block_mask
+except (ImportError, AttributeError):
+    pass
+
 # Compat shim: SizeVarAllocator.size_hint and symbolic_hint were removed
 # in PyTorch nightly (PR #175365). torch_npu inductor codegen uses them.
 try:
